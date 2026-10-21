@@ -1,18 +1,22 @@
 from urllib.parse import urlparse
 
 try:
-    from ddgs import DDGS            # new package name
+    from ddgs import DDGS
 except ImportError:
-    from duckduckgo_search import DDGS  # old package name (fallback)
+    from duckduckgo_search import DDGS
 
-def find_seller_urls(query, max_results=10):
-    """Search the web for sites selling this product. One URL per domain."""
+
+def ddg_text_search(query, max_results=10):
+    """Raw live web search. Free, no API key."""
     try:
-        results = DDGS().text(f"{query} buy online", max_results=max_results)
+        return list(DDGS().text(query, max_results=max_results))
     except Exception:
         return []
+
+
+def find_seller_urls(query, max_results=10):
     seen, urls = set(), []
-    for r in results:
+    for r in ddg_text_search(f"{query} buy online", max_results=max_results):
         u = r.get("href") or r.get("link") or r.get("url")
         if not u or not u.startswith("http"):
             continue
