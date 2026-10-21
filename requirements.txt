@@ -1,0 +1,7 @@
+streamlit
+chromadb
+google-genai
+python-whois
+python-dotenv
+ddgs
+requests
