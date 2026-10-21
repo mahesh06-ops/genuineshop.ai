@@ -1,147 +1,127 @@
-import ssl
-import socket
-import whois
-from datetime import datetime
+import re, ssl, socket, whois
+from datetime import datetime, date
 from urllib.parse import urlparse
 from difflib import SequenceMatcher
 
-SUSPICIOUS_TLDS = (".xyz", ".top", ".buzz", ".click", ".work", ".loan",
-                   ".tk", ".ml", ".cf", ".gq", ".icu", ".cyou")
+SUSPICIOUS_TLDS = (".xyz", ".top", ".buzz", ".click", ".work", ".shop", ".store",
+                   ".online", ".site", ".icu", ".live", ".rest", ".monster")
 
+class WebsiteVerifier:
 
-def get_domain(url):
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return urlparse(url).netloc.lower().replace("www.", ""), url
+    def get_domain_info(self, url: str) -> dict:
+        if "://" not in url:
+            url = "https://" + url
+        domain = urlparse(url).netloc.split(":")[0]
+        domain = domain[4:] if domain.startswith("www.") else domain
+        return {"domain": domain,
+                "domain_age_days": self._domain_age(domain),
+                "ssl_valid": self._check_ssl(domain),
+                "is_ip_address": self._is_ip_url(url),
+                "has_suspicious_tld": any(domain.endswith(t) for t in SUSPICIOUS_TLDS)}
 
-
-def matches(domain, domain_list):
-    """Exact domain or subdomain match (shop.nike.com matches nike.com)."""
-    return any(domain == d or domain.endswith("." + d) for d in domain_list if d)
-
-
-def domain_age_days(domain):
-    try:
-        w = whois.whois(domain)
-        c = w.creation_date
-        if isinstance(c, list):
-            c = c[0]
-        if c is None:
+    def _domain_age(self, domain):
+        try:
+            c = whois.whois(domain).creation_date
+            if isinstance(c, list): c = c[0]
+            if c is None: return -1
+            if isinstance(c, datetime):
+                if c.tzinfo: c = c.replace(tzinfo=None)
+            elif isinstance(c, date):
+                c = datetime(c.year, c.month, c.day)
+            return (datetime.now() - c).days
+        except Exception:
             return -1
-        return (datetime.now() - c.replace(tzinfo=None)).days
-    except Exception:
-        return -1
 
+    def _check_ssl(self, domain):
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((domain, 443), timeout=10) as sock:
+                with ctx.wrap_socket(sock, server_hostname=domain):
+                    return True
+        except Exception:
+            return False
 
-def ssl_valid(domain):
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=8) as s:
-            with ctx.wrap_socket(s, server_hostname=domain) as ss:
-                ss.getpeercert()
-        return True
-    except Exception:
-        return False
+    def _is_ip_url(self, url):
+        host = urlparse(url).netloc.split(":")[0]
+        parts = host.split(".")
+        return len(parts) == 4 and all(p.isdigit() for p in parts)
 
+    def detect_typosquatting(self, url, official_domains):
+        if "://" not in url: url = "https://" + url
+        first = urlparse(url).netloc.split(":")[0]
+        first = first[4:] if first.startswith("www.") else first
+        first = first.split(".")[0]
+        for official in official_domains:
+            sim = SequenceMatcher(None, first, official.split(".")[0]).ratio()
+            if 0.75 < sim < 1.0:
+                return {"is_typosquat": True, "imitating": official, "similarity": round(sim, 2)}
+        return {"is_typosquat": False}
 
-def typosquat(domain, official_list):
-    name = domain.split(".")[0]
-    for off in official_list:
-        sim = SequenceMatcher(None, name, off.split(".")[0]).ratio()
-        if 0.7 < sim < 1.0:
-            return {"is_typo": True, "imitates": off, "sim": round(sim, 2)}
-    return {"is_typo": False}
+    # ---------- price sanity ----------
+    @staticmethod
+    def _first_number(s):
+        if not s: return None
+        m = re.search(r"\d+(?:\.\d{1,2})?", str(s).replace(",", ""))
+        return float(m.group()) if m else None
 
+    @staticmethod
+    def _numbers(s):
+        if not s: return []
+        return [float(m) for m in re.findall(r"\d+(?:\.\d{1,2})?", str(s).replace(",", ""))]
 
-def _result(url, domain, score, category, signals, price=None):
-    return {"url": url, "domain": domain, "score": score,
-            "category": category, "signals": signals, "price": price}
+    def price_suspicion(self, page_price, est_range):
+        p = self._first_number(page_price)
+        nums = self._numbers(est_range)
+        if p is not None and nums:
+            low = min(nums)
+            if low > 0 and p < 0.5 * low:
+                pct = int((1 - p / low) * 100)
+                return f"Price ({page_price}) is ~{pct}% BELOW the normal price (~{low:.0f})"
+        return None
 
+    # ---------- decisive verdict ----------
+    def decide(self, url, rag_match, official_domains, page_price=None, est_price_range=None):
+        info = self.get_domain_info(url)
+        reasons, red = [], 0
 
-def analyze_site(url, ctx):
-    """ctx keys: brand, official, official_confirmed, retailers,
-    safe_browsing, page, reports — all from LIVE sources."""
-    domain, url = get_domain(url)
-    official = [d.lower() for d in (ctx.get("official") or [])]
-    confirmed = [d.lower() for d in (ctx.get("official_confirmed") or [])]
-    retailers = [d.lower() for d in (ctx.get("retailers") or [])]
-    brand = (ctx.get("brand") or "").strip()
-    score, signals = 50, []
+        if rag_match["status"] == "official":
+            reasons.append(rag_match["reason"])
+            if info["ssl_valid"]: reasons.append("Valid SSL certificate")
+            if info["domain_age_days"] > 365:
+                reasons.append(f"Domain is {info['domain_age_days']//365}+ years old")
+            return {"label": "GENUINE", "kind": "official", "reasons": reasons}
 
-    # A. Official website (verified LIVE)
-    if matches(domain, confirmed):
-        return _result(url, domain, 100, "SAFE",
-            [f"✅ OFFICIAL website of {brand or 'this brand'} — confirmed by 2 live sources (Wikidata + web search)"])
-    if matches(domain, official):
-        return _result(url, domain, 97, "SAFE",
-            [f"✅ Official website of {brand or 'this brand'} (live lookup)"])
-    if matches(domain, retailers):
-        score = 85
-        signals.append(f"✅ Authorized retailer of {brand or 'this brand'} (live web data)")
+        if rag_match["status"] == "authorized":
+            reasons.append(rag_match["reason"])
+            return {"label": "GENUINE", "kind": "authorized", "reasons": reasons}
 
-    # B. Google Safe Browsing — Google's real-time phishing DB
-    sb = ctx.get("safe_browsing")
-    if sb is True:
-        score -= 60
-        signals.append("🚨 FLAGGED by Google Safe Browsing (live phishing/malware database)")
-    elif sb is None:
-        signals.append("ℹ️ Google Safe Browsing not configured (optional API key)")
+        if rag_match["status"] == "scam_pattern":
+            red += 3; reasons.append(rag_match["reason"])
+        if rag_match["status"] == "impersonation":
+            red += 2; reasons.append(rag_match["reason"])
 
-    # C. Live page-content analysis
-    page = ctx.get("page") or {}
-    price = page.get("detected_price") or None
-    if page:
-        v, reason = page.get("verdict"), page.get("reason", "")
-        if v == "scam":
-            score -= 45; signals.append(f"🚨 Live page analysis: SCAM — {reason}")
-        elif v == "suspicious":
-            score -= 18; signals.append(f"⚠️ Live page analysis: suspicious — {reason}")
-        elif v == "legitimate":
-            score += 12; signals.append(f"✅ Live page analysis: looks legitimate — {reason}")
-        if page.get("price_too_low"):
-            score -= 15
-            signals.append(f"🚨 Price on page ({page.get('detected_price', '?')}) is unrealistically low")
-        if page.get("missing_business_info"):
-            score -= 10; signals.append("⚠️ No business address / contact / return policy found")
-        if page.get("payment_red_flags"):
-            score -= 10; signals.append("⚠️ Risky payment methods (bank transfer / crypto / gift cards)")
+        typo = self.detect_typosquatting(url, official_domains)
+        if typo.get("is_typosquat"):
+            red += 3; reasons.append(f"Lookalike domain imitating {typo['imitating']} (typosquatting)")
 
-    # D. Brand impersonation + typosquatting (checked against LIVE official list)
-    if brand and brand.lower() in domain and not matches(domain, official + retailers):
-        score -= 30
-        signals.append(f"🚨 Uses brand name '{brand}' but is NOT an official/authorized site")
-    t = typosquat(domain, official)
-    if t["is_typo"]:
-        score -= 35
-        signals.append(f"🚨 Typosquatting — imitates {t['imitates']} ({t['sim']:.0%} similar)")
+        if info["is_ip_address"]:
+            red += 3; reasons.append("Uses an IP address instead of a real domain name")
+        if info["domain_age_days"] == -1:
+            red += 1; reasons.append("Domain age could not be verified")
+        elif info["domain_age_days"] < 90:
+            red += 2; reasons.append(f"Domain is only {info['domain_age_days']} days old — scam sites are usually brand new")
+        elif info["domain_age_days"] > 730:
+            reasons.append(f"Domain is {info['domain_age_days']//365} years old")
+        if not info["ssl_valid"]:
+            red += 1; reasons.append("Invalid or missing SSL certificate (not secure)")
+        if info["has_suspicious_tld"]:
+            red += 1; reasons.append(f"Uses a suspicious TLD (.{url.split('.')[-1]})")
 
-    # E. Community scam reports
-    reps = ctx.get("reports") or []
-    if reps:
-        score -= min(25, 10 * len(reps))
-        signals.append(f"⚠️ {len(reps)} web result(s) flag this domain as scam/fake — e.g. “{reps[0][:70]}”")
+        flag = self.price_suspicion(page_price, est_price_range)
+        if flag:
+            red += 2; reasons.append(flag)
 
-    # F. WHOIS domain age (live)
-    age = domain_age_days(domain)
-    if age == -1:
-        score -= 15; signals.append("⚠️ Domain age unknown (WHOIS blocked/private)")
-    elif age < 60:
-        score -= 30; signals.append(f"🚨 Very new domain — {age} days old (live WHOIS)")
-    elif age < 365:
-        score -= 12; signals.append(f"⚠️ Young domain — {age} days old (live WHOIS)")
-    else:
-        score += 10; signals.append(f"✅ Established domain — ~{age // 365} year(s) old (live WHOIS)")
-
-    # G. SSL / TLD / IP (live)
-    if ssl_valid(domain):
-        score += 5; signals.append("✅ Valid SSL certificate (live check)")
-    else:
-        score -= 25; signals.append("🚨 No valid SSL certificate (live check)")
-    if domain.endswith(SUSPICIOUS_TLDS):
-        score -= 20; signals.append("⚠️ TLD commonly abused by scam sites")
-    if domain and all(c.isdigit() or c == "." for c in domain):
-        score -= 25; signals.append("🚨 URL uses a raw IP address")
-
-    score = max(0, min(100, score))
-    category = "SAFE" if score >= 70 else "SUSPICIOUS" if score >= 40 else "DANGEROUS"
-    return _result(url, domain, score, category, signals, price)
+        if red >= 2:
+            return {"label": "FAKE", "kind": rag_match["status"], "reasons": reasons}
+        return {"label": "UNVERIFIED", "kind": "unknown",
+                "reasons": reasons or ["Not in the verified database — no strong signals either way"]}

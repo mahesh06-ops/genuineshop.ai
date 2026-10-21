@@ -1,117 +1,87 @@
-from concurrent.futures import ThreadPoolExecutor
-import knowledge_base as kb
-import verifier
-import search
-import live_lookup as live
-import gemini_client as gc
+from vision import identify_product_from_image, identify_product_from_text
+from page_scraper import extract_page_info
+from seller_finder import (build_genuine_links, get_avoid_list, search_web_sellers,
+                           classify_sellers, get_product_image, guess_official_site)
+from rag_engine import (match_domain, find_brand_entry, get_domain,
+                        identify_product_fallback, BRANDS)
+from verifier import WebsiteVerifier
 
+verifier = WebsiteVerifier()
 
-class Engine:
+def _analyze_product(product_info):
+    genuine = build_genuine_links(product_info)
+    avoid = get_avoid_list(product_info)
+    query = product_info.get("search_query") or product_info.get("product_name") or ""
+    try:
+        found = search_web_sellers(query)
+    except Exception:
+        found = []
+    cls = classify_sellers(product_info, found)
+    seen = {get_domain(l["url"]) for l in genuine}
+    for g in cls["genuine"]:
+        d = get_domain(g["url"])
+        if d not in seen:
+            seen.add(d)
+            genuine.append({"seller": g["title"][:70] or d, "url": g["url"],
+                            "status": "VERIFIED SELLER (live search)"})
+    return {"product_info": product_info, "genuine_links": genuine,
+            "avoid": avoid + cls["avoid"]}
 
-    def __init__(self):
-        self.col = kb.build_or_load()   # local DB = optional speed booster now
+# ---------- MODE 1: image ----------
+def analyze_image(image_bytes):
+    product_info = identify_product_from_image(image_bytes)
+    if not product_info or not (product_info.get("brand") or product_info.get("product_name")):
+        return {"error": "no_ai"}          # UI will show instructions
+    return _analyze_product(product_info)
 
-    # ---------- LIVE brand profile (cached 7 days) ----------
-    def brand_profile(self, brand):
-        brand = (brand or "").strip()
-        if not brand or brand.lower() in ("unknown", "n/a", "none"):
-            return {"brand": "", "official": [], "confirmed": [],
-                    "retailers": [], "price_note": ""}
-        key = f"brand::{brand.lower()}"
-        cached = live.cache_get(key)
-        if cached:
-            return cached
+# ---------- MODE 2: product name ----------
+def analyze_name(name):
+    try:
+        product_info = identify_product_from_text(name)
+    except Exception:
+        product_info = None
+    if not product_info:
+        product_info = identify_product_fallback(name)   # works with ZERO keys
+    result = _analyze_product(product_info)
+    result["image"] = get_product_image(product_info.get("search_query") or name)
+    return result
 
-        wiki = [d for d in live.official_site_wikidata(brand) if d]   # source 1
-        info = gc.brand_info_search(brand) or {}                      # source 2
-        gem = [d.replace("www.", "").lower()
-               for d in info.get("official_website", []) if d]
+# ---------- MODE 3: website link ----------
+def analyze_url(url):
+    if "://" not in url:
+        url = "https://" + url
+    page = extract_page_info(url)
 
-        official = list(dict.fromkeys(wiki + gem))
-        confirmed = [d for d in official if d in wiki and d in gem]   # 2-source agreement
+    text = f"{page.get('title','')} {page.get('description','')}".strip()
+    product_info = None
+    if text:
+        try:
+            product_info = identify_product_from_text(text)
+        except Exception:
+            product_info = None
+    if not product_info:
+        product_info = identify_product_fallback(text or url)   # zero-key fallback
+    product_info.setdefault("search_query", product_info.get("product_name", ""))
 
-        profile = {
-            "brand": brand,
-            "official": official,
-            "confirmed": confirmed,
-            "retailers": [d.replace("www.", "").lower()
-                          for d in info.get("authorized_retailers", []) if d],
-            "price_note": info.get("typical_price_note", ""),
-        }
-        live.cache_set(key, profile)
-        return profile
+    m = match_domain(url)
+    entry = find_brand_entry(product_info) or m.get("entry")
+    official_domains = entry["official_domains"] if entry else \
+                       [d for e in BRANDS for d in e["official_domains"]]
 
-    # ---------- full LIVE check of ONE url ----------
-    def check_url(self, url, profile, product_info=None, deep=True):
-        domain, _ = verifier.get_domain(url)
-        profile = profile or {}
-        official = list(profile.get("official", []))
-        retailers = list(profile.get("retailers", []))
+    verdict = verifier.decide(url, m, official_domains,
+                              page_price=page.get("price"),
+                              est_price_range=product_info.get("estimated_price_range"))
 
-        rag = kb.match_website(self.col, url)              # local booster
-        if rag.get("status") == "official" and domain not in official:
-            official.append(domain)
-        if rag.get("status") == "retailer" and domain not in retailers:
-            retailers.append(domain)
+    genuine = build_genuine_links(product_info)
 
-        ctx = {
-            "brand": profile.get("brand", ""),
-            "official": official,
-            "official_confirmed": profile.get("confirmed", []),
-            "retailers": retailers,
-            "safe_browsing": live.safe_browsing(url),      # Google's live phishing DB
-        }
+    if entry:
+        real_site = {"seller": f"{entry['brand']} — Official Website",
+                     "url": entry["official_site"]}
+    else:
+        real_site = None
+        brand = (product_info.get("brand") or "").strip()
+        if brand:
+            real_site = guess_official_site(brand)
 
-        known = verifier.matches(domain, official) or verifier.matches(domain, retailers)
-
-        if deep and not known:
-            # scrape + LLM-analyze the ACTUAL page (cached 1 day)
-            ck = f"pageai::{url}"
-            page = live.cache_get(ck, ttl=24 * 3600)
-            if page is None:
-                text = live.fetch_page_text(url)
-                page = gc.analyze_page_llm(url, text, product_info or {}) if text else {}
-                live.cache_set(ck, page or {})
-            if page:
-                ctx["page"] = page
-                # auto-detect the brand from the page itself (works for ANY site)
-                if not ctx["brand"] and page.get("detected_brand") not in (None, "", "unknown"):
-                    b = page["detected_brand"]
-                    prof2 = self.brand_profile(b)
-                    ctx["brand"] = b
-                    ctx["official"] = list(dict.fromkeys(ctx["official"] + prof2["official"]))
-                    ctx["official_confirmed"] = prof2["confirmed"]
-                    ctx["retailers"] = list(dict.fromkeys(ctx["retailers"] + prof2["retailers"]))
-                    known = (verifier.matches(domain, ctx["official"])
-                             or verifier.matches(domain, ctx["retailers"]))
-            if not known:
-                ctx["reports"] = live.community_scam_reports(domain)
-
-        return verifier.analyze_site(url, ctx), ctx
-
-    # ---------- Tabs 1 & 2: any product ----------
-    def analyze_product(self, product_name=None, image_bytes=None, mime_type="image/jpeg"):
-        if image_bytes:
-            info = gc.identify_product_from_image(image_bytes, mime_type)
-        else:
-            info = {"brand": "unknown", "product_name": product_name,
-                    "search_query": product_name}
-
-        profile = self.brand_profile(info.get("brand", ""))
-
-        urls = search.find_seller_urls(info.get("search_query") or product_name)
-        if not urls:
-            return info, [], "⚠️ Live search returned no results. Try again or use the Check-a-Website tab.", profile
-
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            pairs = list(ex.map(lambda u: self.check_url(u, profile, info), urls))
-        results = [r for r, _ in pairs]
-        results.sort(key=lambda s: s["score"], reverse=True)
-
-        report = gc.generate_report(info, results, profile.get("price_note", ""))
-        return info, results, report, profile
-
-    # ---------- Tab 3: any URL ----------
-    def analyze_url(self, url, brand_hint=None):
-        profile = self.brand_profile(brand_hint) if brand_hint else {}
-        return self.check_url(url, profile, None, deep=True)
+    return {"page": page, "product_info": product_info, "verdict": verdict,
+            "genuine_links": genuine, "real_site": real_site}

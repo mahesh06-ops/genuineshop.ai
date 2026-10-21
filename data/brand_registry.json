@@ -1,0 +1,86 @@
+{
+  "retailers": {
+    "Amazon":      {"domain": "amazon.com",      "search_url": "https://www.amazon.com/s?k={q}"},
+    "Flipkart":    {"domain": "flipkart.com",    "search_url": "https://www.flipkart.com/search?q={q}"},
+    "Myntra":      {"domain": "myntra.com",      "search_url": "https://www.myntra.com/{qd}"},
+    "Foot Locker": {"domain": "footlocker.com",  "search_url": "https://www.footlocker.com/search?query={q}"},
+    "Walmart":     {"domain": "walmart.com",     "search_url": "https://www.walmart.com/search?q={q}"},
+    "Best Buy":    {"domain": "bestbuy.com",     "search_url": "https://www.bestbuy.com/site/searchpage.jsp?st={q}"},
+    "Target":      {"domain": "target.com",      "search_url": "https://www.target.com/s?searchTerm={q}"},
+    "Croma":       {"domain": "croma.com",       "search_url": "https://www.croma.com/searchB?q={q}"}
+  },
+  "documents": [
+    {
+      "brand": "Nike",
+      "aliases": ["air force", "air max", "jordan", "dunk", "react", "pegasus"],
+      "official_domains": ["nike.com"],
+      "official_site": "https://www.nike.com",
+      "authorized_retailers": ["Amazon", "Flipkart", "Myntra", "Foot Locker"],
+      "known_scam_patterns": ["nike-shoes-sale", "nike-factory-outlet", "cheap-nike", "nike-outlet-store", "nike-discount"],
+      "notes": "Nike never sells via Instagram DM/WhatsApp. 80% off claims are scams."
+    },
+    {
+      "brand": "Apple",
+      "aliases": ["iphone", "ipad", "macbook", "airpods", "imac", "apple watch", "vision pro"],
+      "official_domains": ["apple.com"],
+      "official_site": "https://www.apple.com",
+      "authorized_retailers": ["Amazon", "Walmart", "Best Buy", "Flipkart"],
+      "known_scam_patterns": ["iphone-sale-cheap", "apple-store-discount", "cheap-iphone", "iphone-liquidation"],
+      "notes": "Apple rarely discounts new iPhones. Unrealistic prices = scam."
+    },
+    {
+      "brand": "Samsung",
+      "aliases": ["galaxy", "galaxy s", "galaxy z", "galaxy buds", "galaxy watch"],
+      "official_domains": ["samsung.com"],
+      "official_site": "https://www.samsung.com",
+      "authorized_retailers": ["Amazon", "Flipkart", "Croma", "Best Buy"],
+      "known_scam_patterns": ["samsung-mega-sale", "galaxy-deals-cheap", "samsung-factory-sale"],
+      "notes": "Verify IMEI on Samsung's official site after purchase."
+    },
+    {
+      "brand": "Adidas",
+      "aliases": ["ultraboost", "superstar", "samba", "yeezy", "gazelle"],
+      "official_domains": ["adidas.com", "adidas.co.in"],
+      "official_site": "https://www.adidas.com",
+      "authorized_retailers": ["Amazon", "Flipkart", "Myntra", "Foot Locker"],
+      "known_scam_patterns": ["adidas-outlet-sale", "cheap-adidas", "adidas-clearance"],
+      "notes": "Check for 'adidas' authenticity tag inside the shoe tongue."
+    },
+    {
+      "brand": "Sony",
+      "aliases": ["playstation", "ps5", "wh1000", "bravia", "alpha"],
+      "official_domains": ["sony.com"],
+      "official_site": "https://www.sony.com",
+      "authorized_retailers": ["Amazon", "Walmart", "Best Buy", "Flipkart"],
+      "known_scam_patterns": ["ps5-cheap-sale", "sony-deal-discount", "playstation5-offer"],
+      "notes": "PS5 below MRP from unknown sites is almost always a scam."
+    },
+    {
+      "brand": "JBL",
+      "aliases": ["flip 6", "charge 5", "tunebeam", "live pro"],
+      "official_domains": ["jbl.com"],
+      "official_site": "https://www.jbl.com",
+      "authorized_retailers": ["Amazon", "Flipkart", "Croma", "Best Buy"],
+      "known_scam_patterns": ["jbl-speaker-sale", "cheap-jbl", "jbl-factory-outlet"],
+      "notes": "Counterfeit JBL speakers are extremely common on ad-linked sites."
+    },
+    {
+      "brand": "boAt",
+      "aliases": ["boat rockerz", "boat airdopes", "boat nirvana"],
+      "official_domains": ["boat-lifestyle.com"],
+      "official_site": "https://www.boat-lifestyle.com",
+      "authorized_retailers": ["Amazon", "Flipkart", "Myntra"],
+      "known_scam_patterns": ["boat-sale-cheap", "boat-nirvana-offer", "boat-factory-sale"],
+      "notes": "Fake boAt sites often ask for UPI payment to personal IDs."
+    },
+    {
+      "brand": "OnePlus",
+      "aliases": ["oneplus 12", "nord", "oneplus buds"],
+      "official_domains": ["oneplus.com", "oneplus.in"],
+      "official_site": "https://www.oneplus.com",
+      "authorized_retailers": ["Amazon", "Best Buy"],
+      "known_scam_patterns": ["oneplus-sale-cheap", "oneplus-nord-offer"],
+      "notes": "OnePlus primarily sells via its own site and Amazon."
+    }
+  ]
+}
