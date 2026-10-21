@@ -1,62 +1,33 @@
 import json
-import chromadb
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.documents import Document
 
-DB_PATH = "./chroma_db"
+def build_knowledge_base():
+    with open("data/brand_registry.json") as f:
+        data = json.load(f)
 
-def build_or_load():
-    """Create (or load) the vector database from brands.json."""
-    db = chromadb.PersistentClient(path=DB_PATH)
-    col = db.get_or_create_collection("brands", metadata={"hnsw:space": "cosine"})
+    # FREE embeddings — runs on your machine, no API key.
+    # First run downloads a ~90MB model, then works offline forever.
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    if col.count() == 0:
-        with open("data/brands.json", encoding="utf-8") as f:
-            brands = json.load(f)
-        for i, b in enumerate(brands):
-            text = (
-                f"Brand: {b['brand']}. "
-                f"Official websites: {', '.join(b['official_domains'])}. "
-                f"Authorized retailers: {', '.join(b['authorized_retailers'])}. "
-                f"Known scam patterns: {', '.join(b['known_scam_patterns'])}. "
-                f"Notes: {b['notes']}"
-            )
-            col.add(
-                ids=[str(i)],
-                documents=[text],
-                metadatas={
-                    "brand": b["brand"],
-                    "official_domains": ",".join(b["official_domains"]),
-                    "authorized_retailers": ",".join(b["authorized_retailers"]),
-                    "scam_patterns": ",".join(b["known_scam_patterns"]),
-                },
-            )
-    return col
+    documents = []
+    for entry in data["documents"]:
+        text = (
+            f"Brand: {entry['brand']}. "
+            f"Official websites: {', '.join(entry['official_domains'])}. "
+            f"Authorized retailers: {', '.join(entry['authorized_retailers'])}. "
+            f"Known scam patterns: {', '.join(entry['known_scam_patterns'])}. "
+            f"Safety notes: {entry['notes']}"
+        )
+        documents.append(Document(page_content=text, metadata={
+            "brand": entry["brand"],
+            "official_domains": entry["official_domains"],
+            "authorized_retailers": entry["authorized_retailers"],
+            "type": "brand_registry"}))
 
-def match_website(col, url):
-    """RAG retrieval: match a URL against the brand knowledge base."""
-    from urllib.parse import urlparse
-    domain = urlparse(url).netloc.lower().replace("www.", "")
-    if not domain:
-        return {"status": "unknown", "brand": "", "official": [], "retailers": []}
+    Chroma.from_documents(documents, embeddings, persist_directory="./chroma_db")
+    print(f"✅ Indexed {len(documents)} brands — using FREE local embeddings (no API key)")
 
-    res = col.query(query_texts=[f"seller website domain {domain}"], n_results=3)
-
-    for meta in res["metadatas"][0]:
-        official = meta["official_domains"].split(",")
-        retailers = meta["authorized_retailers"].split(",")
-        scams = meta["scam_patterns"].split(",")
-
-        if domain in official:
-            return {"status": "official", "brand": meta["brand"],
-                    "official": official, "retailers": retailers}
-        if domain in retailers:
-            return {"status": "retailer", "brand": meta["brand"],
-                    "official": official, "retailers": retailers}
-        if any(p and p in domain for p in scams):
-            return {"status": "scam", "brand": meta["brand"],
-                    "official": official, "retailers": retailers}
-
-    # No exact match — return the closest brand (used for impersonation checks)
-    best = res["metadatas"][0][0]
-    return {"status": "unknown", "brand": best["brand"],
-            "official": best["official_domains"].split(","),
-            "retailers": best["authorized_retailers"].split(",")}
+if __name__ == "__main__":
+    build_knowledge_base()
