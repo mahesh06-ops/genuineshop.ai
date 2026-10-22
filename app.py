@@ -4,10 +4,7 @@ st.write(
     "Gemini secret exists:",
     bool(st.secrets.get("GEMINI_API_KEY", ""))
 )
-st.write(
-    "OpenAI secret exists:",
-    bool(st.secrets.get("OPENAI_API_KEY", ""))
-)
+
 st.write(
     "VirusTotal secret exists:",
     bool(st.secrets.get("VIRUSTOTAL_API_KEY", ""))
