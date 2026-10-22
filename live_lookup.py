@@ -3,7 +3,6 @@ LIVE data sources — work for ANY brand/product/website:
 1. Wikidata API          -> official website of virtually any known brand (free, no key)
 2. Google Safe Browsing  -> Google's real-time phishing/malware database (free key)
 3. VirusTotal            -> Multi-engine domain reputation (free key)
-4. URLVoid               -> 40+ engine domain scan (free key)
 5. Google Custom Search  -> Site-restricted official product search (free key)
 6. Live page fetching    -> real content of any webpage
 7. Community reports     -> web search for scam discussions about a domain
@@ -197,36 +196,6 @@ def virustotal_reputation(domain: str) -> Optional[Dict]:
     return None
 
 
-# -------- 4. URLVoid Scan --------
-def urlvoid_scan(domain: str) -> Optional[Dict]:
-    """Returns dict with 'detected' count and engine details. None if no key/error."""
-    keys = get_keys()
-    if not keys.has_urlvoid():
-        return None
-
-    key = _cache_key("uv", domain)
-    cached = cache_get(key, ttl=REPUTATION_CACHE_TTL_HOURS * 3600)
-    if cached is not None:
-        return cached
-
-    try:
-        r = requests.get(
-            "https://api.urlvoid.com/v1/scan",
-            params={"key": keys.urlvoid, "host": domain},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            # Parse URLVoid response (structure varies)
-            result = {"raw": data}
-            cache_set(key, result)
-            return result
-    except Exception as e:
-        print(f"URLVoid error: {e}")
-    return None
-
-
-# -------- 5. Google Custom Search: Official Product Search --------
 def search_official_site(brand: str, product_query: str, official_domains: List[str]) -> List[Dict]:
     """
     Search ONLY the official brand domains for the product.

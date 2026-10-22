@@ -10,7 +10,6 @@ from config import get_keys, SUSPICIOUS_TLDS
 from live_lookup import (
     safe_browsing_check,
     virustotal_reputation,
-    urlvoid_scan,
     domain_intelligence,
     community_scam_reports,
 )
@@ -112,7 +111,6 @@ class WebsiteVerifier:
         results = {
             "safe_browsing": safe_browsing_check(url),
             "virustotal": virustotal_reputation(domain),
-            "urlvoid": urlvoid_scan(domain),
             "community_reports": community_scam_reports(domain),
         }
         return results
@@ -229,7 +227,7 @@ class WebsiteVerifier:
                page_price: str = None, est_price_range: str = None) -> Dict:
         """
         Multi-signal weighted verdict:
-        - Security APIs (Safe Browsing, VirusTotal, URLVoid)
+        - Security APIs (Safe Browsing, VirusTotal)
         - Domain intelligence (age, SSL, WHOIS)
         - Typosquatting detection
         - Page content analysis
@@ -281,12 +279,6 @@ class WebsiteVerifier:
         if vt and vt.get("malicious", 0) > 0:
             red_score += 20 + min(vt["malicious"] * 5, 30)
             reasons.append(f"🚨 VirusTotal: {vt['malicious']} engines flag as malicious")
-
-        uv = security["urlvoid"]
-        if uv and uv.get("raw", {}).get("detected", 0) > 0:
-            red_score += 15
-            reasons.append("🚨 URLVoid: Detected by security engines")
-
         reports = security["community_reports"]
         if reports:
             red_score += min(len(reports) * 5, 25)

@@ -1,5 +1,5 @@
-"""
-Gemini Client — Enhanced with Google Search Grounding for real-time data.
+﻿"""
+Gemini Client â€” Enhanced with Google Search Grounding for real-time data.
 """
 import json
 import re
@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 from config import get_keys
 
-MODEL = "gemini-1.5-flash"  # Free tier model with grounding support
+MODEL = "gemini-3.8-flash"  # Free tier model with grounding support
 
 
 def _get_client() -> Optional[genai.Client]:
@@ -231,13 +231,13 @@ Live analysis of websites selling it:
 {chr(10).join(lines)}
 
 Write a report with these sections:
-1. **✅ Safe to buy from** — ranked, with reasons
-2. **🚨 Avoid** — with reasons
-3. **⚠️ Price sanity check** — compare found prices vs typical; call out too-good-to-be-true offers
-4. **💡 Best recommendation** — the single best domain + one safety tip
+1. **âœ… Safe to buy from** â€” ranked, with reasons
+2. **ðŸš¨ Avoid** â€” with reasons
+3. **âš ï¸ Price sanity check** â€” compare found prices vs typical; call out too-good-to-be-true offers
+4. **ðŸ’¡ Best recommendation** â€” the single best domain + one safety tip
 Under 250 words, simple language, use the actual domains."""
     try:
         resp = client.models.generate_content(model=MODEL, contents=prompt)
         return resp.text
     except Exception as e:
-        return f"⚠️ Report generation failed: {e}"
+        return f"âš ï¸ Report generation failed: {e}"

@@ -7,3 +7,8 @@ live_cache.json
 .streamlit/secrets.toml
 
 search_cache.json
+
+# Temporary local backups
+backup_before_removing_reputation_api_*/
+urlvoid_removal_backup_*/
+gemini_client.py.backup

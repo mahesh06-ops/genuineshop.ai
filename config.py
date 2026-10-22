@@ -1,4 +1,4 @@
-﻿
+
 """Centralized configuration with free API key management."""
 
 import os
@@ -27,7 +27,6 @@ class APIKeys:
     gemini: Optional[str] = None
     safe_browsing: Optional[str] = None
     virustotal: Optional[str] = None
-    urlvoid: Optional[str] = None
     google_cse_key: Optional[str] = None
     google_cse_cx: Optional[str] = None
     serpapi: Optional[str] = None
@@ -46,7 +45,6 @@ class APIKeys:
                 "SAFE_BROWSING_API_KEY", "SAFE_BROWSING"
             ],
             "virustotal": ["VIRUSTOTAL_API_KEY", "VIRUSTOTAL"],
-            "urlvoid": ["URLVOID_API_KEY", "URLVOID"],
             "google_cse_key": [
                 "GOOGLE_CSE_API_KEY", "GOOGLE_CSE_KEY"
             ],
@@ -106,9 +104,6 @@ class APIKeys:
     def has_virustotal(self) -> bool:
         return bool(self.virustotal)
 
-    def has_urlvoid(self) -> bool:
-        return bool(self.urlvoid)
-
     def has_google_cse(self) -> bool:
         return bool(self.google_cse_key and self.google_cse_cx)
 
@@ -130,7 +125,6 @@ def features_enabled() -> dict:
         "gemini_grounded_search": keys.has_gemini(),
         "safe_browsing": keys.has_safe_browsing(),
         "virustotal_reputation": keys.has_virustotal(),
-        "urlvoid_scan": keys.has_urlvoid(),
         "official_product_search": keys.has_google_cse(),
         "serpapi_fallback": bool(keys.serpapi),
         "ollama_cloud": keys.has_ollama_cloud(),
