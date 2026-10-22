@@ -1,5 +1,29 @@
 import streamlit as st
 from pipeline import analyze_image, analyze_name, analyze_url
+st.write(
+    "Gemini secret exists:",
+    bool(st.secrets.get("GEMINI_API_KEY", ""))
+)
+st.write(
+    "OpenAI secret exists:",
+    bool(st.secrets.get("OPENAI_API_KEY", ""))
+)
+st.write(
+    "VirusTotal secret exists:",
+    bool(st.secrets.get("VIRUSTOTAL_API_KEY", ""))
+)
+st.write(
+    "Safe Browsing secret exists:",
+    bool(st.secrets.get("SAFE_BROWSING_API_KEY", ""))
+)
+st.write(
+    "SerpAPI secret exists:",
+    bool(st.secrets.get("SERPAPI_KEY", ""))
+)
+st.write(
+    "Ollama Cloud secret exists:",
+    bool(st.secrets.get("OLLAMA_API_KEY", ""))
+)
 
 st.set_page_config(page_title="GenuineShop AI", page_icon="🛒", layout="wide")
 st.title("🛒 GenuineShop AI — Find REAL Sellers, Avoid Fake Websites")
