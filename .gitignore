@@ -12,3 +12,23 @@ search_cache.json
 backup_before_removing_reputation_api_*/
 urlvoid_removal_backup_*/
 gemini_client.py.backup
+
+# Secrets and local-only files
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Caches and temporary files
+search_cache.json
+live_cache.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local backups
+backup_before_removing_reputation_api_*/
+urlvoid_removal_backup_*/
+backup_before_reputation_api_*/
+gemini_client.py.backup
