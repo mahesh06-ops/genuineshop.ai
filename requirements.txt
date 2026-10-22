@@ -6,3 +6,10 @@ python-dotenv
 ddgs
 requests
 beautifulsoup4
+langchain
+langchain-community
+langchain-huggingface
+sentence-transformers
+serpapi
+groq
+ollama

@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 live_cache.json
 .streamlit/secrets.toml
+
+search_cache.json
