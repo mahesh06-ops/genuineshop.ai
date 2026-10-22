@@ -55,7 +55,7 @@ def _gemini(prompt: str, image_bytes: bytes = None) -> dict:
     parts.append(prompt)
 
     resp = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-3.8-flash",
         contents=parts,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
@@ -75,7 +75,7 @@ def _ollama_cloud(prompt: str, image_bytes: bytes = None) -> dict:
         headers={"Authorization": f"Bearer {api_key}"},
     )
 
-    model = "llava:latest" if image_bytes else "gemma4:31b"
+    model = "gemma4:31b-cloud" if image_bytes else "gemma4:31b-cloud"
     message = {"role": "user", "content": prompt}
     if image_bytes:
         message["images"] = [base64.b64encode(image_bytes).decode()]
@@ -88,7 +88,7 @@ def _ollama_cloud(prompt: str, image_bytes: bytes = None) -> dict:
 def _ollama_local(prompt: str, image_bytes: bytes = None) -> dict:
     import ollama
 
-    model = "llava:latest" if image_bytes else "llama3.2:latest"
+    model = "gemma4:e2b" if image_bytes else "llama3.2:latest"
     message = {"role": "user", "content": prompt}
     if image_bytes:
         message["images"] = [base64.b64encode(image_bytes).decode()]
