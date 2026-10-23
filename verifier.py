@@ -368,7 +368,7 @@ class WebsiteVerifier:
             label = "UNVERIFIED"
             kind = "unknown"
 
-        return {
+        result = {
             "label": label,
             "kind": kind,
             "net_score": net_score,
@@ -379,4 +379,41 @@ class WebsiteVerifier:
             "security_apis": security,
             "typosquatting": typo,
             "page_analysis": page_analysis,
+            # Backward compatibility aliases for older callers.
+            "category": "safe" if label == "GENUINE" else "suspicious" if label == "UNVERIFIED" else "unsafe",
+            "score": max(0, min(100, net_score + 50)),
         }
+        return result
+
+
+def analyze_site(url: str, rag_match: Optional[Dict] = None, product_info: Optional[Dict] = None,
+                page_price: str = None, est_price_range: str = None) -> Dict:
+    """Compatibility wrapper for older code that expects a single-site analysis routine."""
+    if rag_match is None:
+        rag_match = {"status": "unknown", "reason": "Domain not in verified registry"}
+
+    official_domains = []
+    if isinstance(rag_match, dict):
+        entry = rag_match.get("entry")
+        if entry:
+            official_domains.extend(entry.get("official_domains", []))
+        if not official_domains and product_info:
+            brand = (product_info.get("brand") or "").strip()
+            if brand:
+                from live_lookup import official_site_wikidata
+                official_domains.extend(official_site_wikidata(brand))
+
+    if not official_domains:
+        from rag_engine import BRANDS
+        for brand_entry in BRANDS:
+            official_domains.extend(brand_entry.get("official_domains", []))
+
+    official_domains = list(dict.fromkeys(official_domains))
+    verifier = WebsiteVerifier()
+    return verifier.decide(
+        url,
+        rag_match,
+        official_domains,
+        page_price=page_price,
+        est_price_range=est_price_range,
+    )

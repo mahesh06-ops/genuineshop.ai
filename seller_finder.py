@@ -15,124 +15,119 @@ from live_lookup import (
 from search import find_seller_urls, ddg_text_search
 
 
+def _is_exact_product_link(url: str, query: str) -> bool:
+    """Return True only for product-specific URLs, not homepages or generic search pages."""
+    if not url or not url.startswith("http"):
+        return False
+
+    parsed = urllib.parse.urlparse(url)
+    path = (parsed.path or "").lower()
+    if not path or path in ("/", "/index.html"):
+        return False
+
+    # Filter obvious search/homepage/category results.
+    blocked_tokens = (
+        "/search", "/browse", "/shop", "/products", "/collections", "/category",
+        "?q=", "&q=", "&search=", "?search=", "/?", "/all-products",
+        "/cart", "/checkout", "/login", "/account"
+    )
+    if any(token in path.lower() for token in blocked_tokens):
+        return False
+
+    if any(token in parsed.netloc.lower() for token in ("google.", "bing.", "duckduckgo.", "search")):
+        return False
+
+    query_tokens = set((query or "").lower().replace("-", " ").split())
+    text = f"{parsed.path} {parsed.query} {parsed.fragment}".lower()
+    if not query_tokens:
+        return "/" not in text or any(marker in text for marker in ("/dp/", "/product/", "/p/", "pid=", "sku="))
+
+    has_product_marker = any(marker in text for marker in ("/dp/", "/product/", "/p/", "/item/", "sku=", "productid", "pid="))
+    if has_product_marker:
+        return True
+
+    # Most exact listings include at least some product identifiers or a meaningful product term.
+    return bool(query_tokens & set(text.replace("/", " ").split())) or bool(any(token in text for token in ["product", "sku", "model"]))
+
+
 def build_genuine_links(product_info: Dict) -> List[Dict]:
-    """
-    Build EXACT, clickable buy links — prioritized:
-    1. Official brand website (direct product page if found)
-    2. Authorized retailers (direct product search)
-    3. Trusted marketplaces (search results)
-    """
+    """Return only exact product URLs that are likely purchase pages, not generic search pages."""
     entry = find_brand_entry(product_info)
     query = product_info.get("search_query") or product_info.get("product_name") or ""
     brand = product_info.get("brand", "").strip()
 
-    q = urllib.parse.quote_plus(query)
-    qd = q.replace("+", "-").lower()
-
     links = []
 
-    # -------- 1. OFFICIAL BRAND WEBSITE --------
+    # 1. Official brand website: only direct product pages, never a homepage fallback.
     official_domains = []
-    official_site_url = None
-
     if entry:
         official_domains = entry.get("official_domains", [])
-        official_site_url = entry.get("official_site")
-    else:
-        # Dynamic lookup via Wikidata for unknown brands
-        if brand:
-            official_domains = official_site_wikidata(brand)
-            if official_domains:
-                official_site_url = f"https://{official_domains[0]}"
+    elif brand:
+        official_domains = official_site_wikidata(brand)
 
-    # Try to find DIRECT product page on official site
     if official_domains and query:
-        print(f"[DEBUG] Searching official domains for product: {official_domains}")
-        official_products = search_official_site(brand or entry["brand"] if entry else brand, query, official_domains)
-        for prod in official_products[:3]:  # Top 3 results
-            avail = check_product_availability(prod["url"])
+        official_brand = brand or (entry["brand"] if entry else "Brand")
+        official_products = search_official_site(official_brand, query, official_domains)
+        for prod in official_products[:3]:
+            url = prod.get("url", "")
+            if not _is_exact_product_link(url, query):
+                continue
+            avail = check_product_availability(url)
             links.append({
-                "seller": f"{brand or (entry['brand'] if entry else 'Brand')} — Official Website",
-                "url": prod["url"],
+                "seller": f"{official_brand} — Official Website",
+                "url": url,
                 "status": "OFFICIAL",
                 "availability": avail,
-                "domain": prod["domain"],
+                "domain": prod.get("domain", get_domain(url)),
                 "snippet": prod.get("snippet", ""),
             })
 
-    # If no direct product found, add official homepage
-    if official_site_url and not any(l["status"] == "OFFICIAL" for l in links):
-        links.append({
-            "seller": f"{brand or (entry['brand'] if entry else 'Brand')} — Official Website",
-            "url": official_site_url,
-            "status": "OFFICIAL",
-            "availability": {"available": None, "confidence": 0, "reason": "Homepage - search for product"},
-            "domain": official_domains[0] if official_domains else "",
-        })
-
-    # -------- 2. AUTHORIZED RETAILERS (Direct Product Search) --------
+    # 2. Authorized retailer pages: only exact product listings, not broad retailer search URLs.
     authorized = entry["authorized_retailers"] if entry else []
     for name in authorized:
         retailer = RETAILERS.get(name)
         if not retailer:
             continue
-        search_url = retailer["search_url"].format(q=q, qd=qd)
-        # Try to get first product result via SerpAPI or DDG
-        direct_url = _get_first_product_result(search_url, name, query)
+        direct_url = _get_first_product_result(retailer["search_url"], name, query)
+        if not direct_url or not _is_exact_product_link(direct_url, query):
+            continue
         links.append({
             "seller": f"{name} — Authorized Retailer",
-            "url": direct_url or search_url,
+            "url": direct_url,
             "status": "AUTHORIZED",
-            "availability": {"available": None, "confidence": 0, "reason": "Search results page"},
+            "availability": {"available": None, "confidence": 0, "reason": "Exact listing identified"},
             "domain": retailer["domain"],
         })
 
-    # -------- 3. TRUSTED MARKETPLACES (Fallback) --------
-    for name in ("Amazon", "Flipkart", "Walmart", "Best Buy", "Target"):
-        if name in authorized:
-            continue
-        retailer = RETAILERS.get(name)
-        if not retailer:
-            continue
-        search_url = retailer["search_url"].format(q=q, qd=qd)
-        direct_url = _get_first_product_result(search_url, name, query)
-        links.append({
-            "seller": name,
-            "url": direct_url or search_url,
-            "status": "TRUSTED MARKETPLACE",
-            "availability": {"available": None, "confidence": 0, "reason": "Search results page"},
-            "domain": retailer["domain"],
-        })
-
-    # Deduplicate
     seen, out = set(), []
-    for l in links:
-        if l["url"] not in seen:
-            seen.add(l["url"])
-            out.append(l)
+    for link in links:
+        url = link.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            out.append(link)
     return out
 
 
 def _get_first_product_result(search_url: str, retailer_name: str, query: str) -> Optional[str]:
-    """Try to extract first actual product URL from a marketplace search page."""
-    # Try SerpAPI first for structured results
+    """Try to extract an exact product result from a retailer search page; otherwise return None."""
     keys = get_keys()
     if keys.serpapi:
         try:
             from serpapi import GoogleSearch
+            domain = urllib.parse.urlparse(search_url).netloc.replace("www.", "")
             raw = GoogleSearch({
-                "q": f"site:{search_url.split('/')[2]} {query}",
+                "q": f"site:{domain} {query}",
                 "api_key": keys.serpapi,
-                "num": 3,
+                "num": 5,
             }).get_dict()
             for r in raw.get("organic_results", []):
                 link = r.get("link", "")
-                if link.startswith("http") and "/dp/" in link or "/product/" in link or "/p/" in link:
+                if not link.startswith("http"):
+                    continue
+                if "/dp/" in link or "/product/" in link or "/p/" in link or "sku=" in link.lower() or "pid=" in link.lower():
                     return link
         except Exception:
             pass
-
-    # Fallback: return search URL (user will see results)
     return None
 
 
@@ -165,7 +160,7 @@ def get_avoid_list(product_info: Dict) -> List[str]:
 
 
 def search_web_sellers(query: str, num: int = 8) -> List[Dict]:
-    """Web search via SerpAPI (if key set) or free DuckDuckGo fallback."""
+    """Search for likely product pages, never generic marketplace homepages or search results."""
     keys = get_keys()
     results = []
 
@@ -173,13 +168,13 @@ def search_web_sellers(query: str, num: int = 8) -> List[Dict]:
         try:
             from serpapi import GoogleSearch
             raw = GoogleSearch({
-                "q": f"buy {query} online",
+                "q": f"{query} product buy",
                 "api_key": keys.serpapi,
             }).get_dict()
-            results = [{
-                "title": r.get("title", ""),
-                "url": r.get("link", "")
-            } for r in raw.get("organic_results", [])[:num]]
+            for r in raw.get("organic_results", [])[:num]:
+                url = r.get("link", "")
+                if url.startswith("http") and _is_exact_product_link(url, query):
+                    results.append({"title": r.get("title", ""), "url": url})
         except Exception:
             pass
 
@@ -187,8 +182,10 @@ def search_web_sellers(query: str, num: int = 8) -> List[Dict]:
         try:
             from ddgs import DDGS
             with DDGS() as d:
-                for r in d.text(f"buy {query} online", max_results=num):
-                    results.append({"title": r.get("title", ""), "url": r.get("href", "")})
+                for r in d.text(f"{query} product", max_results=num):
+                    url = r.get("href", "")
+                    if url.startswith("http") and _is_exact_product_link(url, query):
+                        results.append({"title": r.get("title", ""), "url": url})
         except Exception:
             pass
 

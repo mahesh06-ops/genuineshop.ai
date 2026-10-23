@@ -441,3 +441,7 @@ def check_product_availability(product_url: str) -> Dict:
         "out_of_stock": out_of_stock,
         "reason": "Product page validated" if available else "Product may be unavailable or page not a product page",
     }
+
+def safe_browsing(url: str):
+    return safe_browsing_check(url)
+

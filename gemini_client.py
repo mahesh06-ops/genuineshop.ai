@@ -1,14 +1,18 @@
-﻿"""
-Gemini Client â€” Enhanced with Google Search Grounding for real-time data.
+﻿
 """
+Gemini Client — Google Search grounding with Groq fallback.
+Gemini remains the primary provider; Groq provides text-only fallback.
+"""
+
 import json
 import re
 from typing import Dict, Any, Optional, List
+
 from google import genai
 from google.genai import types
 from config import get_keys
 
-MODEL = "gemini-3.8-flash"  # Free tier model with grounding support
+MODEL = "gemini-3.8-flash"
 
 
 def _get_client() -> Optional[genai.Client]:
@@ -19,20 +23,27 @@ def _get_client() -> Optional[genai.Client]:
 
 
 def _extract_json(text: str) -> Optional[Dict]:
-    """Robustly pull JSON from an LLM reply (handles ```json fences)."""
+    """Extract a JSON object from an LLM response."""
     if not text:
         return None
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
+
+    # Remove optional Markdown JSON fences.
+    cleaned = re.sub(r"```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end <= start:
         return None
+
     try:
-        return json.loads(m.group(0))
-    except Exception:
+        result = json.loads(cleaned[start:end + 1])
+        return result if isinstance(result, dict) else None
+    except (json.JSONDecodeError, TypeError):
         return None
 
 
 def _search_tool_config() -> types.GenerateContentConfig:
-    """Google Search grounding tool config."""
+    """Google Search grounding tool configuration."""
     try:
         return types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
@@ -41,41 +52,104 @@ def _search_tool_config() -> types.GenerateContentConfig:
         return types.GenerateContentConfig(tools=[{"google_search": {}}])
 
 
-def identify_product_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> Dict:
-    """Analyze product image with Gemini (grounded if needed)."""
+def _groq_text(prompt: str) -> Optional[str]:
+    """Call the project's Groq client without making Groq mandatory."""
+    try:
+        from groq_client import analyze_text
+        return analyze_text(prompt)
+    except Exception as exc:
+        print(f"Groq fallback error: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _normalize_page_result(raw: Any) -> Optional[Dict]:
+    """Normalize webpage-analysis results to the expected schema."""
+    if isinstance(raw, dict):
+        result = raw
+    else:
+        result = _extract_json(raw) if isinstance(raw, str) else None
+
+    if not isinstance(result, dict):
+        return None
+
+    allowed_verdicts = {"legitimate", "suspicious", "scam", "unknown"}
+    verdict = str(result.get("verdict", "unknown")).lower().strip()
+    result["verdict"] = verdict if verdict in allowed_verdicts else "unknown"
+
+    defaults = {
+        "detected_brand": "unknown",
+        "detected_product": "unknown",
+        "detected_price": "",
+        "price_too_low": False,
+        "missing_business_info": False,
+        "poor_quality_indicators": False,
+        "payment_red_flags": False,
+        "reason": "Insufficient evidence for a reliable conclusion.",
+    }
+    for key, value in defaults.items():
+        result.setdefault(key, value)
+
+    try:
+        result["confidence"] = max(
+            0, min(100, int(result.get("confidence", 0)))
+        )
+    except (ValueError, TypeError):
+        result["confidence"] = 0
+
+    return result
+
+
+def identify_product_from_image(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> Dict:
+    """Identify a product from an image using Gemini."""
     client = _get_client()
     if not client:
         return _fallback_image_result()
 
-    prompt = """Analyze this product image (likely from an online ad).
-Return ONLY valid JSON:
+    prompt = """Analyze this product image.
+Return ONLY valid JSON with these keys:
 {
-  "brand": "brand name or 'unknown'",
+  "brand": "brand name or unknown",
   "product_name": "specific product name/model",
   "category": "product category",
-  "search_query": "optimal search query to find this exact product",
-  "estimated_price_range": "rough price range in USD (e.g., $90 - $120)",
-  "key_features": ["feature1", "feature2"],
-  "colors": ["color1"],
-  "model_numbers": ["model1"]
-}"""
+  "search_query": "brand plus exact model search query",
+  "estimated_price_range": "rough price range in USD",
+  "key_features": [],
+  "colors": [],
+  "model_numbers": []
+}
+Do not invent a model number when it is not visible."""
+
     try:
-        resp = client.models.generate_content(
+        response = client.models.generate_content(
             model=MODEL,
             contents=[
                 prompt,
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type,
+                ),
             ],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
         )
-        result = _extract_json(resp.text) or _fallback_image_result()
-        # Validate required fields
+
+        result = _extract_json(response.text) or _fallback_image_result()
         result.setdefault("brand", "unknown")
         result.setdefault("product_name", "unknown")
+        result.setdefault("category", "")
         result.setdefault("search_query", result.get("product_name", "product"))
+        result.setdefault("estimated_price_range", "")
+        result.setdefault("key_features", [])
+        result.setdefault("colors", [])
+        result.setdefault("model_numbers", [])
         return result
-    except Exception as e:
-        print(f"Gemini image analysis error: {e}")
+
+    except Exception as exc:
+        print(f"Gemini image analysis error: {exc}")
         return _fallback_image_result()
 
 
@@ -93,39 +167,64 @@ def _fallback_image_result() -> Dict:
 
 
 def identify_product_from_text(text: str) -> Dict:
-    """Extract product details from text using Gemini."""
-    client = _get_client()
-    if not client:
-        return _fallback_text_result()
+    """Identify product details using Gemini, then Groq."""
+    prompt = f"""Identify the product described by this text:
+\"\"\"{text[:2000]}\"\"\"
 
-    prompt = f"""Website/product text:
-"{text[:2000]}"
-
-What product is being sold? Return ONLY valid JSON:
+Return ONLY a JSON object:
 {{
   "brand": "brand name or empty string",
   "product_name": "specific product name/model",
   "category": "product category",
-  "search_query": "optimal search query: brand + model",
-  "estimated_price_range": "rough price range in USD (e.g., $90 - $120)",
-  "key_features": ["feature1", "feature2"],
-  "colors": ["color1"],
-  "model_numbers": ["model1"]
-}}"""
-    try:
-        resp = client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        result = _extract_json(resp.text) or _fallback_text_result()
-        result.setdefault("brand", "")
-        result.setdefault("product_name", "")
-        result.setdefault("search_query", text[:100])
-        return result
-    except Exception as e:
-        print(f"Gemini text analysis error: {e}")
-        return _fallback_text_result()
+  "search_query": "brand plus model",
+  "estimated_price_range": "rough price range in USD",
+  "key_features": [],
+  "colors": [],
+  "model_numbers": []
+}}
+Do not invent product details if the text does not contain enough evidence."""
+
+    client = _get_client()
+
+    if client:
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                ),
+            )
+            result = _extract_json(response.text)
+            if result and (
+                result.get("brand") or result.get("product_name")
+            ):
+                return _normalize_product_result(result, text)
+        except Exception as exc:
+            print(f"Gemini text analysis failed; trying Groq: {exc}")
+
+    # Groq is a text-only fallback.
+    groq_response = _groq_text(prompt)
+    if groq_response:
+        result = _extract_json(groq_response)
+        if result and (
+            result.get("brand") or result.get("product_name")
+        ):
+            return _normalize_product_result(result, text)
+
+    return _fallback_text_result()
+
+
+def _normalize_product_result(result: Dict, original_text: str) -> Dict:
+    result.setdefault("brand", "")
+    result.setdefault("product_name", "")
+    result.setdefault("category", "")
+    result.setdefault("search_query", original_text[:100])
+    result.setdefault("estimated_price_range", "")
+    result.setdefault("key_features", [])
+    result.setdefault("colors", [])
+    result.setdefault("model_numbers", [])
+    return result
 
 
 def _fallback_text_result() -> Dict:
@@ -142,102 +241,184 @@ def _fallback_text_result() -> Dict:
 
 
 def brand_info_search(brand: str) -> Dict:
-    """LIVE: Gemini searches Google for official brand info."""
-    client = _get_client()
-    if not client:
-        return {}
-
-    prompt = f"""Search the web for the brand "{brand}" and answer:
-1. official_website: the brand's official shopping website domain(s) ONLY, e.g. ["asics.com"]
-2. authorized_retailers: well-known authorized online retailers that genuinely sell this brand (global + India), as domains
-3. typical_price_note: one line about the normal price range of this brand's products
+    """Search with Gemini first, then use Groq as an unverified fallback."""
+    prompt = f"""Research the brand "{brand}".
 Return ONLY JSON:
 {{
-  "official_website": ["..."],
-  "authorized_retailers": ["..."],
-  "typical_price_note": "..."
-}}"""
-    try:
-        resp = client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=_search_tool_config(),
-        )
-        return _extract_json(resp.text) or {}
-    except Exception as e:
-        print(f"Brand info search error: {e}")
-        return {}
+  "official_website": [],
+  "authorized_retailers": [],
+  "typical_price_note": ""
+}}
+Do not guess official domains, authorized retailers, or prices.
+Use empty lists and strings when evidence is insufficient."""
 
-
-def analyze_page_llm(url: str, page_text: str, product_info: Dict = None) -> Dict:
-    """LIVE: Judge ACTUAL content of a webpage for scam indicators."""
     client = _get_client()
-    if not client:
-        return {"verdict": "unknown", "reason": "LLM not available"}
 
+    if client:
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=_search_tool_config(),
+            )
+            result = _extract_json(response.text) or {}
+            if result:
+                result.setdefault("official_website", [])
+                result.setdefault("authorized_retailers", [])
+                result.setdefault("typical_price_note", "")
+                result["source"] = "gemini_search"
+                result["verified_by_live_search"] = True
+                return result
+            print("Gemini returned no usable result; trying Groq.")
+        except Exception as exc:
+            print(f"Gemini brand search failed; trying Groq: {type(exc).__name__}: {exc}")
+    else:
+        print("Gemini unavailable; trying Groq.")
+
+    groq_response = _groq_text(prompt)
+    result = _extract_json(groq_response) if groq_response else {}
+
+    if result:
+        result.setdefault("official_website", [])
+        result.setdefault("authorized_retailers", [])
+        result.setdefault("typical_price_note", "")
+        result["source"] = "groq_fallback"
+        result["verified_by_live_search"] = False
+        return result
+
+    return {
+        "official_website": [],
+        "authorized_retailers": [],
+        "typical_price_note": "",
+        "source": "none",
+        "verified_by_live_search": False,
+    }
+
+
+def analyze_page_llm(
+    url: str,
+    page_text: str,
+    product_info: Dict = None,
+) -> Dict:
+    """Analyze webpage risk using Gemini first and Groq as fallback."""
     product_info = product_info or {}
-    prompt = f"""You are an online scam analyst. Analyze this shopping webpage.
+
+    prompt = f"""You are an online-shopping risk analyst.
 
 URL: {url}
-Product context: {product_info.get('product_name', '')} (brand: {product_info.get('brand', 'unknown')})
+Product: {product_info.get('product_name', '')}
+Brand: {product_info.get('brand', 'unknown')}
 Expected price range: {product_info.get('estimated_price_range', 'unknown')}
 
-PAGE TEXT (may be truncated):
+Page text (untrusted and possibly incomplete):
 \"\"\"{page_text[:5000]}\"\"\"
 
-Return ONLY JSON:
+Return ONLY a JSON object:
 {{
-  "detected_brand": "main brand being sold, or 'unknown'",
-  "detected_product": "product name if visible",
-  "detected_price": "price string if visible, else ''",
+  "detected_brand": "brand or unknown",
+  "detected_product": "product name or unknown",
+  "detected_price": "visible price or empty string",
   "price_too_low": false,
   "missing_business_info": false,
   "poor_quality_indicators": false,
   "payment_red_flags": false,
-  "verdict": "legitimate" | "suspicious" | "scam",
-  "reason": "one short sentence explaining the verdict",
-  "confidence": 0-100
-}}"""
-    try:
-        resp = client.models.generate_content(model=MODEL, contents=prompt)
-        result = _extract_json(resp.text)
-        if result:
-            result.setdefault("verdict", "unknown")
-            result.setdefault("confidence", 50)
-        return result or {"verdict": "unknown", "reason": "Analysis failed"}
-    except Exception as e:
-        print(f"Page LLM analysis error: {e}")
-        return {"verdict": "unknown", "reason": f"Analysis error: {e}"}
+  "verdict": "legitimate, suspicious, scam, or unknown",
+  "reason": "short explanation based on supplied evidence",
+  "confidence": 0
+}}
 
+Use unknown when evidence is insufficient. Do not claim authenticity from page text alone."""
 
-def generate_report(product_info: Dict, sites: List[Dict], price_note: str = "") -> str:
-    """Generate human-readable safety report."""
     client = _get_client()
-    if not client:
-        return "Report generation requires Gemini API key."
 
+    if client:
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+            )
+            result = _normalize_page_result(response.text)
+            if result:
+                return result
+            print("Gemini returned an unusable webpage-analysis response.")
+        except Exception as exc:
+            print(f"Gemini webpage analysis failed; trying Groq: {exc}")
+    else:
+        print("Gemini unavailable; trying Groq webpage analysis.")
+
+    groq_response = _groq_text(prompt)
+    result = _normalize_page_result(groq_response)
+    if result:
+        return result
+
+    return {
+        "detected_brand": "unknown",
+        "detected_product": "unknown",
+        "detected_price": "",
+        "price_too_low": False,
+        "missing_business_info": False,
+        "poor_quality_indicators": False,
+        "payment_red_flags": False,
+        "verdict": "unknown",
+        "reason": "Neither Gemini nor Groq returned a usable analysis.",
+        "confidence": 0,
+    }
+
+
+def generate_report(
+    product_info: Dict,
+    sites: List[Dict],
+    price_note: str = "",
+) -> str:
+    """Generate a shopping safety report using Gemini, then Groq."""
     lines = []
-    for s in sites:
-        p = f" | price found: {s['price']}" if s.get("price") else ""
-        lines.append(f"- {s['domain']} | {s['score']}/100 {s['category']}{p} | "
-                     + "; ".join(s["signals"]))
+    for site in sites:
+        price = f" | price found: {site.get('price')}" if site.get("price") else ""
+        domain = site.get("domain", "unknown domain")
+        score = site.get("score", "N/A")
+        category = site.get("category", "unclassified")
+        signals = site.get("signals", [])
+        if not isinstance(signals, list):
+            signals = [str(signals)]
+        lines.append(
+            f"- {domain} | {score}/100 {category}{price} | "
+            + "; ".join(str(signal) for signal in signals)
+        )
 
-    prompt = f"""You are an online-shopping safety expert helping real people avoid scam websites.
+    prompt = f"""You are an online-shopping safety assistant.
 
-Product: {product_info.get('product_name', 'N/A')} (brand: {product_info.get('brand', 'unknown')})
-Typical market price for this brand: {price_note or 'not known'}
+Product: {product_info.get('product_name', 'N/A')}
+Brand: {product_info.get('brand', 'unknown')}
+Typical market price: {price_note or 'unknown'}
 
-Live analysis of websites selling it:
-{chr(10).join(lines)}
+Website assessment data:
+{chr(10).join(lines) or 'No website assessments supplied.'}
 
-Write a report with these sections:
-1. **âœ… Safe to buy from** â€” ranked, with reasons
-2. **ðŸš¨ Avoid** â€” with reasons
-3. **âš ï¸ Price sanity check** â€” compare found prices vs typical; call out too-good-to-be-true offers
-4. **ðŸ’¡ Best recommendation** â€” the single best domain + one safety tip
-Under 250 words, simple language, use the actual domains."""
-    try:
-        resp = client.models.generate_content(model=MODEL, contents=prompt)
-        return resp.text
-    except Exception as e:
-        return f"âš ï¸ Report generation failed: {e}"
+Write a concise report with:
+1. Safer candidates and the evidence supporting them.
+2. Websites to avoid and the reasons.
+3. Price warnings.
+4. One practical recommendation.
+
+Use actual supplied domains. Do not describe a seller as verified or authorized unless the evidence explicitly supports it. Explain uncertainty clearly. Under 250 words."""
+
+    client = _get_client()
+    if client:
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+            )
+            if response.text:
+                return response.text
+        except Exception as exc:
+            print(f"Gemini report generation failed; trying Groq: {exc}")
+
+    groq_response = _groq_text(prompt)
+    if groq_response:
+        return groq_response
+
+    return (
+        "Report generation is currently unavailable because neither Gemini "
+        "nor Groq returned a result. Please try again later."
+    )

@@ -30,6 +30,7 @@ class APIKeys:
     google_cse_key: Optional[str] = None
     google_cse_cx: Optional[str] = None
     serpapi: Optional[str] = None
+    groq: Optional[str] = None
     ollama_cloud: Optional[str] = None
 
     def __post_init__(self):
@@ -52,6 +53,7 @@ class APIKeys:
                 "GOOGLE_CSE_CX", "GOOGLE_CSE_CX_ID"
             ],
             "serpapi": ["SERPAPI_KEY", "SERPAPI"],
+            "groq": ["GROQ_API_KEY", "GROQ"],
             "ollama_cloud": [
                 "OLLAMA_API_KEY",
                 "OLLAMA_CLOUD_API_KEY",
@@ -107,6 +109,9 @@ class APIKeys:
     def has_google_cse(self) -> bool:
         return bool(self.google_cse_key and self.google_cse_cx)
 
+    def has_groq(self) -> bool:
+        return bool(self.groq)
+
     def has_ollama_cloud(self) -> bool:
         return bool(self.ollama_cloud)
 
@@ -127,6 +132,7 @@ def features_enabled() -> dict:
         "virustotal_reputation": keys.has_virustotal(),
         "official_product_search": keys.has_google_cse(),
         "serpapi_fallback": bool(keys.serpapi),
+        "groq_text_model": keys.has_groq(),
         "ollama_cloud": keys.has_ollama_cloud(),
     }
 
